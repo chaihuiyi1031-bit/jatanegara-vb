@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700;9..144,800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        /* ===== 全部 CSS 保持不变，与你之前一致 ===== */
+        /* ===== 全部 CSS 原样保留，未作任何改动 ===== */
         :root {
             --void: #050508;
             --void-2: #0b0c14;
@@ -197,7 +197,7 @@
             display: none !important;
         }
 
-        /* ===== 开始面板 ===== */
+        /* ===== 开始面板 (圆角) ===== */
         #start-panel {
             position: fixed;
             top: 0; left: 0;
@@ -775,7 +775,7 @@
         </div>
     </div>
 
-    <!-- 排行榜模态框 -->
+    <!-- 排行榜模态框 (Papan Markah) 带分页 -->
     <div id="leaderboard-panel">
         <div class="leaderboard-card">
             <h2>🏆 Papan Markah</h2>
@@ -970,10 +970,11 @@
             }
 
             // ================================================================
-            // 4. 记录管理（localStorage 备份 + Supabase 上传，不变）
+            // 4. 记录管理（localStorage 仅作本地备份，所有读写优先 Supabase）
             // ================================================================
             const RECORDS_KEY = 'ijati_records';
 
+            // 本地备份（保留，但不再用于排行榜）
             function getLocalRecords() {
                 try {
                     const data = localStorage.getItem(RECORDS_KEY);
@@ -989,9 +990,11 @@
                 } catch (e) {}
             }
 
+            // ---- 核心：上传至 Supabase（修改：增加超时详情插入） ----
             async function uploadRecordToSupabase(record) {
                 try {
-                    const { error } = await supabase
+                    // 1. 始终插入 scores 表（保留所有记录）
+                    const { error: errorScores } = await supabase
                         .from('scores')
                         .insert([{
                             player_name: record.name,
@@ -1000,21 +1003,43 @@
                             score: record.score,
                             timestamp: record.timestamp
                         }]);
-                    if (error) {
-                        console.error('Supabase insert error:', error);
+                    if (errorScores) {
+                        console.error('Supabase insert error (scores):', errorScores);
                     } else {
-                        console.log('✅ Record uploaded to Supabase');
+                        console.log('✅ Record uploaded to scores');
+                    }
+
+                    // 2. 如果是超时，额外插入 timeout_details 表（记录未完成的关键词）
+                    if (record.status === 'timeout' && record.missed_words) {
+                        const { error: errorTimeout } = await supabase
+                            .from('timeout_details')
+                            .insert([{
+                                player_name: record.name,
+                                school: record.school,
+                                unlocked_count: record.score,
+                                missed_words: record.missed_words,
+                                timestamp: record.timestamp
+                            }]);
+                        if (errorTimeout) {
+                            console.error('Supabase insert error (timeout_details):', errorTimeout);
+                        } else {
+                            console.log('✅ Timeout details uploaded to timeout_details');
+                        }
                     }
                 } catch (e) {
                     console.warn('Supabase upload failed:', e);
                 }
             }
 
+            // 保存记录（既存本地备份，又上传云端）
             function saveRecord(record) {
+                // 本地备份（可离线查看）
                 saveLocalRecord(record);
+                // 上传云端（不阻塞游戏流程）
                 uploadRecordToSupabase(record);
             }
 
+            // ---- 从 Supabase 获取排行榜数据 ----
             async function fetchLeaderboardData(page, pageSize) {
                 const from = (page - 1) * pageSize;
                 const to = from + pageSize - 1;
@@ -1037,7 +1062,7 @@
             }
 
             // ================================================================
-            // 5. 语音匹配辅助 —— 【仅此函数被修改，其余全部锁定】
+            // 5. 语音匹配辅助（不变）
             // ================================================================
             function levenshtein(a, b) {
                 const matrix = Array.from({ length: a.length + 1 }, (_, i) => i);
@@ -1065,50 +1090,39 @@
                 return 3;
             }
 
-            // 核心匹配函数 —— 严格化
+            // ---- 重写的 isKeywordMatch：严格匹配 ----
             function isKeywordMatch(kw, speech) {
-                // 清理：去除非字母数字字符，转小写
+                // 清理函数：去除非字母数字字符，转小写
                 const clean = s => s.replace(/[^a-z0-9]/g, '').toLowerCase();
-                const cleanKw = clean(kw);
-                const cleanSpeech = clean(speech);
-
-                // 先将语音拆分成单词列表（按空格分隔，清理后）
-                const speechWords = speech.toLowerCase().split(/\s+/).map(w => clean(w)).filter(w => w.length > 0);
-                const kwWords = kw.toLowerCase().split(/\s+/).map(w => clean(w)).filter(w => w.length > 0);
+                
+                // 拆分关键词和语音为单词列表
+                const kwWords = kw.toLowerCase().split(/\s+/).map(clean).filter(w => w.length > 0);
+                const speechWords = speech.toLowerCase().split(/\s+/).map(clean).filter(w => w.length > 0);
 
                 if (kwWords.length === 0) return false;
 
-                // --- 特殊情况：Sabah 容错（保留用户之前的要求） ---
-                if (cleanKw === 'sabah' && (cleanSpeech.includes('saba') || cleanSpeech.includes('sabar'))) return true;
-
-                // --- 单关键词匹配 ---
-                if (kwWords.length === 1) {
-                    // 要求语音单词列表长度必须为 1（即只能是一个单词，不能有 'tidak' 等附加词）
-                    if (speechWords.length !== 1) return false;
-                    // 精确相等（忽略大小写已由 clean 处理）或编辑距离在阈值内
-                    const singleKw = kwWords[0];
-                    const singleSpeech = speechWords[0];
-                    if (singleSpeech === singleKw) return true;
-                    // 编辑距离容错（仅用于轻微发音偏差）
-                    const dist = levenshtein(singleKw, singleSpeech);
-                    const threshold = getThreshold(singleKw.length);
-                    return dist <= threshold;
+                // 特殊容错：Sabah 允许 "saba" 或 "sabar"
+                if (kwWords.length === 1 && kwWords[0] === 'sabah') {
+                    const speechStr = speechWords.join('');
+                    if (speechStr.includes('saba') || speechStr.includes('sabar')) return true;
                 }
 
-                // --- 多关键词匹配（精确单词匹配，不允许编辑距离容错） ---
-                // 要求语音单词数量必须与关键词单词数量相同
+                // 1. 单关键词：语音必须恰好一个单词，且完全相同
+                if (kwWords.length === 1) {
+                    if (speechWords.length !== 1) return false;
+                    return speechWords[0] === kwWords[0];
+                }
+
+                // 2. 多关键词：语音单词数量必须相同，且每个单词完全相同（顺序一致）
                 if (speechWords.length !== kwWords.length) return false;
-                // 逐个比较每个单词（忽略大小写已由 clean 处理）
                 for (let i = 0; i < kwWords.length; i++) {
-                    if (speechWords[i] !== kwWords[i]) {
-                        return false;
-                    }
+                    if (speechWords[i] !== kwWords[i]) return false;
                 }
                 return true;
             }
 
             // ================================================================
-            // 6. 游戏状态（完全不变）
+            // 6. 游戏状态（不变）
             // ================================================================
             let gameActive = false;
             let timerInterval = null;
@@ -1132,10 +1146,11 @@
             let rightTigerCenter = null;
             let rec = null;
 
+            // 分页状态
             let lbCurrentPage = 1;
 
             // ================================================================
-            // 7. 语音识别（不变）
+            // 7. 语音识别 (不变)
             // ================================================================
             function initSpeechRecognition() {
                 if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
@@ -1231,12 +1246,26 @@
                 return count;
             }
 
+            // ---- 新增：获取未完成的关键词列表 ----
+            function getMissedWordsList() {
+                const missed = [];
+                for (let gid in GAME_DATA) {
+                    const group = GAME_DATA[gid];
+                    group.kws.forEach((kw, idx) => {
+                        if (!group.status[idx]) {
+                            missed.push(kw);
+                        }
+                    });
+                }
+                return missed;
+            }
+
             function checkAllUnlocked() {
                 return Object.values(GAME_DATA).every(group => group.status.every(s => s === true));
             }
 
             // ================================================================
-            // 9. Three.js（不变）
+            // 9-10. Three.js 与手势（完全不变）
             // ================================================================
             function initScene() {
                 scene = new THREE.Scene();
@@ -1384,9 +1413,6 @@
                 });
             }
 
-            // ================================================================
-            // 10. 手势识别（不变）
-            // ================================================================
             function startGestureOnly() {
                 if (isCamStarted) return;
                 isCamStarted = true;
@@ -1591,7 +1617,7 @@
                     score: elapsed,
                     timestamp: Date.now()
                 };
-                saveRecord(record);
+                saveRecord(record); // 云端上传 + 本地备份
 
                 document.getElementById('victory-sub').textContent = 'Anda berjaya menyelesaikan semua!';
                 document.getElementById('victory-score').textContent = `⏱️ ${elapsed} saat`;
@@ -1603,6 +1629,9 @@
                 }
             }
 
+            // ================================================================
+            // 11b. 超时处理（增加 missed_words）
+            // ================================================================
             function handleGameTimeout() {
                 if (isGameFinished) return;
                 isGameFinished = true;
@@ -1614,12 +1643,14 @@
                     recGuardInterval = null;
                 }
                 const unlocked = getUnlockedCount();
+                const missed = getMissedWordsList();
 
                 const record = {
                     name: playerName,
                     school: playerSchool,
                     status: 'timeout',
                     score: unlocked,
+                    missed_words: missed,
                     timestamp: Date.now()
                 };
                 saveRecord(record);
@@ -1658,7 +1689,7 @@
             }
 
             // ================================================================
-            // 13. 排行榜渲染（不变）
+            // 13. 排行榜渲染（从 Supabase 读取）
             // ================================================================
             async function renderLeaderboard() {
                 const container = document.getElementById('leaderboard-list');
@@ -1867,7 +1898,7 @@
             window.toggleFullScreen = toggleFullScreen;
 
             // ================================================================
-            // 17. 启动（不变）
+            // 17. 启动
             // ================================================================
             async function boot() {
                 initScene();
@@ -1903,6 +1934,7 @@
                     document.getElementById('info-panel').classList.remove('active');
                 });
 
+                // 排行榜（Papan Markah）异步加载
                 document.getElementById('btn-leaderboard').addEventListener('click', async () => {
                     lbCurrentPage = 1;
                     await renderLeaderboard();
@@ -1923,8 +1955,6 @@
                     }
                 });
                 document.getElementById('lb-next').addEventListener('click', async () => {
-                    // 点击下一页时，先尝试增加页数，再重新渲染（renderLeaderboard 会自动修正越界）
-                    lbCurrentPage++;
                     await renderLeaderboard();
                 });
 
