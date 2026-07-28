@@ -992,44 +992,38 @@
 
             // ---- 核心：上传至 Supabase（修改：增加超时详情插入） ----
             async function uploadRecordToSupabase(record) {
-                try {
-                    // 1. 始终插入 scores 表（保留所有记录）
-                    const { error: errorScores } = await supabase
-                        .from('scores')
-                        .insert([{
-                            player_name: record.name,
-                            school: record.school,
-                            status: record.status,
-                            score: record.score,
-                            timestamp: record.timestamp
-                        }]);
-                    if (errorScores) {
-                        console.error('Supabase insert error (scores):', errorScores);
-                    } else {
-                        console.log('✅ Record uploaded to scores');
-                    }
-
-                    // 2. 如果是超时，额外插入 timeout_details 表（记录未完成的关键词）
-                    if (record.status === 'timeout' && record.missed_words) {
-                        const { error: errorTimeout } = await supabase
-                            .from('timeout_details')
-                            .insert([{
-                                player_name: record.name,
-                                school: record.school,
-                                unlocked_count: record.score,
-                                missed_words: record.missed_words,
-                                timestamp: record.timestamp
-                            }]);
-                        if (errorTimeout) {
-                            console.error('Supabase insert error (timeout_details):', errorTimeout);
-                        } else {
-                            console.log('✅ Timeout details uploaded to timeout_details');
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Supabase upload failed:', e);
-                }
-            }
+    try {
+        if (record.status === 'completed') {
+            // 只插入 scores 表
+            const { error } = await supabase
+                .from('scores')
+                .insert([{
+                    player_name: record.name,
+                    school: record.school,
+                    status: record.status,
+                    score: record.score,
+                    timestamp: record.timestamp
+                }]);
+            if (error) console.error('Supabase insert error (scores):', error);
+            else console.log('✅ Completed record uploaded to scores');
+        } else if (record.status === 'timeout') {
+            // 只插入 timeout_details 表
+            const { error } = await supabase
+                .from('timeout_details')
+                .insert([{
+                    player_name: record.name,
+                    school: record.school,
+                    unlocked_count: record.score,
+                    missed_words: record.missed_words,
+                    timestamp: record.timestamp
+                }]);
+            if (error) console.error('Supabase insert error (timeout_details):', error);
+            else console.log('✅ Timeout record uploaded to timeout_details');
+        }
+    } catch (e) {
+        console.warn('Supabase upload failed:', e);
+    }
+}
 
             // 保存记录（既存本地备份，又上传云端）
             function saveRecord(record) {
